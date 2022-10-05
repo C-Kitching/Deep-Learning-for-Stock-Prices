@@ -394,7 +394,6 @@ def plot_time_series_data_with_predictions_from_neural_net(
     # set up figure
     fig = figure(figsize=(25, 5), dpi=80)
     fig.patch.set_facecolor((1.0, 1.0, 1.0))
-    plt.xticks(x, xticks, rotation = 'vertical')
     plt.grid(visible = None, which = 'major', axis = 'y', linestyle = '--')
     plt.title("Compare predicted prices to actual prices")
 
@@ -419,6 +418,7 @@ def plot_time_series_data_with_predictions_from_neural_net(
         else:
             xticks[i] = None
     x = np.arange(0,len(xticks))
+    plt.xticks(x, xticks, rotation = 'vertical')
     
     plt.legend() # add legend
     plt.show() # show graph
