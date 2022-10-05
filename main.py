@@ -142,8 +142,7 @@ def plot_time_series_data(data_date, data_close_price, num_data_points,
     x = np.arange(0,len(xticks))
     plt.xticks(x, xticks, rotation = 'vertical')
 
-    # show graph
-    plt.show()
+    plt.show() # show graph
 
 class Normalizer():
     """Class to normalise data
@@ -179,21 +178,93 @@ class Normalizer():
         return (x*self.sd) + self.mu
 
 def prepare_data_x(x, window_size):
-    # perform windowing
+    """Given a data set x of size N and a target window size of w,
+    perform a sliding window transformation
+    Start at the first element and slice an array of size w and store
+    Move to the next element and slice a array of size w and store
+    Continue until reaching the -w element of x, at which point the 
+    most recent slice will end exactly at x[-1]
+    Output will have shape (N - w + 1, w)
+
+    Args:
+        x (float[]): data to perform sliding window transformation on
+        window_size (int): size of window
+
+    Returns:
+        output (float[][]): data after perfoming sliding window transform
+    """
+    # number of data arrays we're splitting data into
     n_row = x.shape[0] - window_size + 1
+
+    # perform the sliding window transformation
     output = np.lib.stride_tricks.as_strided(x, shape=(n_row, window_size), 
              strides=(x.strides[0], x.strides[0]))
+
+    # output the results, splitting the last array off, as this is the data
+    # we will ultimately use to predict the next days value
     return output[:-1], output[-1]
 
 
 def prepare_data_y(x, window_size):
-    # # perform simple moving average
-    # output = np.convolve(x, np.ones(window_size), 'valid') / window_size
+    """Get the target values for the sliding window data
+    I.e the sliding window transformation turned the data into arrays like
+    x[:w], x[1:w+1], ..., x[-w:]
+    We are using these to predict the next value of the time series, i.e the 
+    corresponding target values are 
+    x[w], x[w+1], ..., x[-1]
+    So we put all these target values into one array with x[w:]
 
-    # use the next day as label
+    Args:
+        x (float[]): data to perform transformation on
+        window_size (int): size of sliding window transformation that was 
+                           performed on x
+
+    Returns:
+        output (float[]): target values of sliding window transformation
+    """
     output = x[window_size:]
     return output
 
+def plot_time_series_data_split_into_train_and_val(
+    data_date, to_plot_data_y_train, to_plot_data_y_val, 
+    num_data_points, config):
+    """Plot time series data divided into training and validation dats
+
+    Args:
+        date_data (str[]): array of dates
+        to_ploy_data_y_train (float[]): training data
+        to_plot_data_y_val (float[]): validation data
+        num_data_points (int): number of data points in sample
+        config (dict{}): configuration for file
+    """
+
+    # format graph
+    fig = figure(figsize=(25, 5), dpi = 80)
+    fig.patch.set_facecolor((1.0, 1.0, 1.0))
+    plt.title("Daily close prices for " + config["alpha_vantage"]["symbol"] 
+              + " - showing training and validation data")
+    plt.grid(visible = None, which = 'major', axis = 'y', linestyle = '--')
+
+    # plot data
+    plt.plot(data_date, to_plot_data_y_train, label="Prices (train)", 
+             color = config["plots"]["color_train"])
+    plt.plot(data_date, to_plot_data_y_val, label = "Prices (validation)", 
+             color = config["plots"]["color_val"])
+
+    # format xticks nicely
+    xticks = [""] * num_data_points
+    for i in range(num_data_points):
+        if((i%config["plots"]["xticks_interval"] == 0 
+           and (num_data_points-i) > config["plots"]["xticks_interval"]) 
+           or i == num_data_points-1):
+            xticks[i] = data_date[i]
+        else:
+            xticks[i] = None
+    x = np.arange(0,len(xticks))
+    plt.xticks(x, xticks, rotation='vertical')
+    
+    plt.legend() # add legend
+    plt.show() # show graph
 
 
 
@@ -216,7 +287,9 @@ def main():
     scaler = Normalizer()
     normalized_data_close_price = scaler.fit_transform(data_close_price)
 
-    # transform data set into input labels and output features
+    # perform sliding window transformation on the data
+    # x is the data we will feed into the model, i.e previous 20 days of prices
+    # y is the target values, i.e price on 21st day
     data_x, data_x_unseen = prepare_data_x(normalized_data_close_price, 
                                            window_size = 
                                            config["data"]["window_size"])
@@ -230,30 +303,34 @@ def main():
     data_y_train = data_y[:split_index]
     data_y_val = data_y[split_index:]
 
-    # prepare data for plotting
-
+    # declare empty arrays that will hold plotting data
     to_plot_data_y_train = np.zeros(num_data_points)
     to_plot_data_y_val = np.zeros(num_data_points)
 
-    to_plot_data_y_train[config["data"]["window_size"]:split_index+config["data"]["window_size"]] = scaler.inverse_transform(data_y_train)
-    to_plot_data_y_val[split_index+config["data"]["window_size"]:] = scaler.inverse_transform(data_y_val)
+    # seperate the data into training and validation to distinguish in plot
+    # note that we have to unnormalise the data for plotting
+    # note that we also remove the first 20 values of the data
+    # this is because the window we are using in the model is of size 20
+    # so we won't be able to predict those values, doing so would require
+    # previous time values which we do not have i.e x[-1:19] is needed to
+    # predict x[19]
+    to_plot_data_y_train[config["data"]["window_size"] : 
+                         split_index + config["data"]["window_size"]] \
+                         = scaler.inverse_transform(data_y_train)
+    to_plot_data_y_val[split_index + config["data"]["window_size"] :] \
+                       = scaler.inverse_transform(data_y_val)
 
-    to_plot_data_y_train = np.where(to_plot_data_y_train == 0, None, to_plot_data_y_train)
-    to_plot_data_y_val = np.where(to_plot_data_y_val == 0, None, to_plot_data_y_val)
+    # replace zero values in the data with None
+    to_plot_data_y_train = np.where(to_plot_data_y_train == 0, None, 
+                                    to_plot_data_y_train)
+    to_plot_data_y_val = np.where(to_plot_data_y_val == 0, None, 
+                                  to_plot_data_y_val)
 
-    ## plots
-
-    fig = figure(figsize=(25, 5), dpi=80)
-    fig.patch.set_facecolor((1.0, 1.0, 1.0))
-    plt.plot(data_date, to_plot_data_y_train, label="Prices (train)", color=config["plots"]["color_train"])
-    plt.plot(data_date, to_plot_data_y_val, label="Prices (validation)", color=config["plots"]["color_val"])
-    xticks = [data_date[i] if ((i%config["plots"]["xticks_interval"]==0 and (num_data_points-i) > config["plots"]["xticks_interval"]) or i==num_data_points-1) else None for i in range(num_data_points)] # make x ticks nice
-    x = np.arange(0,len(xticks))
-    plt.xticks(x, xticks, rotation='vertical')
-    plt.title("Daily close prices for " + config["alpha_vantage"]["symbol"] + " - showing training and validation data")
-    plt.grid(b=None, which='major', axis='y', linestyle='--')
-    plt.legend()
-    plt.show()
+    
+    # plot graph of training and validation data split
+    plot_time_series_data_split_into_train_and_val(
+        data_date, to_plot_data_y_train, to_plot_data_y_val, 
+        num_data_points, config)
 
 
     
