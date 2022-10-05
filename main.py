@@ -266,6 +266,145 @@ def plot_time_series_data_split_into_train_and_val(
     plt.legend() # add legend
     plt.show() # show graph
 
+class TimeSeriesDataset(Dataset):
+    """Custom TimeSeriesDataset object that inherits from PyTorch dataset and 
+    contains both the data to train on and the target data
+
+    Args:
+        Dataset (object): abstract class that represents a dataset
+    """
+    def __init__(self, x, y):
+
+        # since we only have 1 feature, we need to convert 'x' into
+        # [batch, sequence, features] for LSTM
+        x = np.expand_dims(x, 2)
+        self.x = x.astype(np.float32)
+        self.y = y.astype(np.float32)
+        
+    def __len__(self):
+        """return length of data
+
+        Returns:
+            int: length of x
+        """
+        return len(self.x)
+
+    def __getitem__(self, idx):
+        """Get value at a specific index
+
+        Args:
+            idx (int): index of item requested
+
+        Returns:
+            float(): tuple containing x and y data at index idx
+        """
+        return (self.x[idx], self.y[idx])
+
+class LSTMModel(nn.Module):
+    """Implement the LSTM Model
+
+    Args:
+        nn (object): neural network
+    """
+
+    def __init__(self, input_size=1, hidden_layer_size=32, num_layers=2, 
+                 output_size=1, dropout=0.2):
+        
+        # allows us to avoid refering to base neural network class specifically
+        super().__init__() 
+
+        # hidden layers to enforce constant error flow to avoid vanishing
+        # gradient problem
+        self.hidden_layer_size = hidden_layer_size
+
+        # map input layers to higher dimensional input feature space,
+        # transforming the features for the LSTM layer
+        self.linear_1 = nn.Linear(input_size, hidden_layer_size)
+
+        # activation function
+        self.relu = nn.ReLU()
+
+        # LSTM layer to learn the data in sequence
+        self.lstm = nn.LSTM(hidden_layer_size, 
+                            hidden_size = self.hidden_layer_size, 
+                            num_layers = num_layers, batch_first = True)
+
+        # randomly selected neurons are ignored during training, this
+        # prevents overfitting
+        self.dropout = nn.Dropout(dropout)
+
+        # produce predicited value based on LSTM
+        self.linear_2 = nn.Linear(num_layers*hidden_layer_size, output_size)
+        
+        self.init_weights()
+
+    def init_weights(self):
+        """Model weights
+        """
+        for name, param in self.lstm.named_parameters():
+            if 'bias' in name:
+                 nn.init.constant_(param, 0.0)
+            elif 'weight_ih' in name:
+                 nn.init.kaiming_normal_(param)
+            elif 'weight_hh' in name:
+                 nn.init.orthogonal_(param)
+
+    def forward(self, x):
+        """Perform one pass through the neural network
+
+        Args:
+            x (tensor): data for training neural network
+
+        Returns:
+            float[]: neural network predicitons
+        """
+        batchsize = x.shape[0] # get batchsize
+
+        # layer 1
+        x = self.linear_1(x)
+        x = self.relu(x)
+        
+        # LSTM layer
+        lstm_out, (h_n, c_n) = self.lstm(x)
+
+        # reshape output from hidden cell into [batch, features] for the 
+        # second linear layer
+        x = h_n.permute(1, 0, 2).reshape(batchsize, -1) 
+        
+        # layer 2
+        x = self.dropout(x)
+        predictions = self.linear_2(x)
+        return predictions[:,-1]
+
+def run_epoch(dataloader, is_training=False):
+    epoch_loss = 0
+
+    if is_training:
+        model.train()
+    else:
+        model.eval()
+
+    for idx, (x, y) in enumerate(dataloader):
+        if is_training:
+            optimizer.zero_grad()
+
+        batchsize = x.shape[0]
+
+        x = x.to(config["training"]["device"])
+        y = y.to(config["training"]["device"])
+
+        out = model(x)
+        loss = criterion(out.contiguous(), y.contiguous())
+
+        if is_training:
+            loss.backward()
+            optimizer.step()
+
+        epoch_loss += (loss.detach().item() / batchsize)
+
+    lr = scheduler.get_last_lr()[0]
+
+    return epoch_loss, lr
 
 
 def main():
@@ -281,7 +420,7 @@ def main():
 
     # plot time series data for IBM
     #plot_time_series_data(data_date, data_close_price, num_data_points, 
-    #                       display_date_range, config)
+                           #display_date_range, config)
 
     # Normalise the data for LSTM
     scaler = Normalizer()
@@ -328,9 +467,64 @@ def main():
 
     
     # plot graph of training and validation data split
-    plot_time_series_data_split_into_train_and_val(
-        data_date, to_plot_data_y_train, to_plot_data_y_val, 
-        num_data_points, config)
+    #plot_time_series_data_split_into_train_and_val(
+        #data_date, to_plot_data_y_train, to_plot_data_y_val, 
+        #num_data_points, config)
+
+    # convert data to TimeSeriesDataset objects
+    dataset_train = TimeSeriesDataset(data_x_train, data_y_train)
+    dataset_val = TimeSeriesDataset(data_x_val, data_y_val)
+
+    # print shapes of data
+    print("Train data shape", dataset_train.x.shape, dataset_train.y.shape)
+    print("Validation data shape", dataset_val.x.shape, dataset_val.y.shape)
+
+    # load the data set objects using dataloader from pytorch
+    # batch: the number of training samples in each pass of the network, 
+    # useful as it reduces memory usage
+    # shuffle: ensure the sample order of each batch is different, which
+    # makes the model more robust
+    train_dataloader = DataLoader(
+        dataset_train, 
+        batch_size = config["training"]["batch_size"], shuffle = True)
+    val_dataloader = DataLoader(
+        dataset_val, batch_size = config["training"]["batch_size"], 
+        shuffle = True)
+
+    # define LSTM model
+    model = LSTMModel(input_size = config["model"]["input_size"], 
+                      hidden_layer_size = config["model"]["lstm_size"], 
+                      num_layers = config["model"]["num_lstm_layers"], 
+                      output_size = 1, dropout=config["model"]["dropout"])
+    model = model.to(config["training"]["device"])
+
+    # Cost function
+    # Measures the differece between the predicted values and the actual values
+    # Model will train until the error of the cost function on validation 
+    # data set no longer improves
+    criterion = nn.MSELoss() 
+
+    # Optimiser to update model parameters
+    # Learning rate (lr) controls how quickly the model converges
+    # If its too high, we can 
+    optimizer = optim.Adam(model.parameters(), 
+                           lr = config["training"]["learning_rate"], 
+                           betas = (0.9, 0.98), eps = 1e-9)
+
+    # reduce the learning rate 
+    scheduler = optim.lr_scheduler.StepLR(
+        optimizer, step_size=config["training"]["scheduler_step_size"], 
+        gamma = 0.1)
+
+    for epoch in range(config["training"]["num_epoch"]):
+        loss_train, lr_train = run_epoch(train_dataloader, is_training=True)
+        loss_val, lr_val = run_epoch(val_dataloader)
+        scheduler.step()
+        
+        print('Epoch[{}/{}] | loss train:{:.6f}, test:{:.6f} | lr:{:.6f}'
+                .format(epoch+1, config["training"]["num_epoch"], loss_train, loss_val, lr_train))
+
+
 
 
     
