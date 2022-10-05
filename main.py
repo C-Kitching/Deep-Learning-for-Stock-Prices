@@ -67,7 +67,7 @@ def get_config():
     return config
 
 def download_data(config):
-    """Download stock data from API
+    """Download stock data from API in reverse chronological order
 
     Args:
         config (dict{}): config for file
@@ -107,17 +107,18 @@ def download_data(config):
     # return data 
     return data_date, data_close_price, num_data_points, display_date_range
 
-def plot_time_series_data(config):
+def plot_time_series_data(data_date, data_close_price, num_data_points, 
+                          display_date_range, config):
     """Plot time series data for a stock
 
     Args:
+        date_data (str[]): array of dates
+        data_close_price (float[]): array of close price values
+        num_data_points (int): number of data points in sample
+        display_data_range (str): time period over which dates occur
         config (dict{}): configuration for file
     """
 
-    # download the data
-    data_date, data_close_price, num_data_points, display_date_range \
-    = download_data(config)
-    
     # format figure
     fig = figure(figsize=(25, 5), dpi=80) 
     fig.patch.set_facecolor((1.0, 1.0, 1.0))
@@ -144,6 +145,57 @@ def plot_time_series_data(config):
     # show graph
     plt.show()
 
+class Normalizer():
+    """Class to normalise data
+    """
+
+    def __init__(self):
+        self.mu = None
+        self.sd = None
+
+    def fit_transform(self, x):
+        """Normalise input data
+
+        Args:
+            x (float[]): input data to normalise
+
+        Returns:
+            nromalised_x (float[]): normalised data
+        """
+        self.mu = np.mean(x, axis=(0), keepdims=True)
+        self.sd = np.std(x, axis=(0), keepdims=True)
+        normalised_x = (x - self.mu)/self.sd
+        return normalised_x
+
+    def inverse_transform(self, x):
+        """Inverse normalisation
+
+        Args:
+            x (float[]): data to unnormalise
+
+        Returns:
+            (float[]): unnormalised data
+        """
+        return (x*self.sd) + self.mu
+
+def prepare_data_x(x, window_size):
+    # perform windowing
+    n_row = x.shape[0] - window_size + 1
+    output = np.lib.stride_tricks.as_strided(x, shape=(n_row, window_size), 
+             strides=(x.strides[0], x.strides[0]))
+    return output[:-1], output[-1]
+
+
+def prepare_data_y(x, window_size):
+    # # perform simple moving average
+    # output = np.convolve(x, np.ones(window_size), 'valid') / window_size
+
+    # use the next day as label
+    output = x[window_size:]
+    return output
+
+
+
 
 def main():
     """Main function
@@ -152,8 +204,56 @@ def main():
     # get configuration for file
     config = get_config()
 
+    # download the data
+    data_date, data_close_price, num_data_points, display_date_range \
+    = download_data(config)
+
     # plot time series data for IBM
-    plot_time_series_data(config)
+    #plot_time_series_data(data_date, data_close_price, num_data_points, 
+    #                       display_date_range, config)
+
+    # Normalise the data for LSTM
+    scaler = Normalizer()
+    normalized_data_close_price = scaler.fit_transform(data_close_price)
+
+    # transform data set into input labels and output features
+    data_x, data_x_unseen = prepare_data_x(normalized_data_close_price, 
+                                           window_size = 
+                                           config["data"]["window_size"])
+    data_y = prepare_data_y(normalized_data_close_price, 
+                            window_size=config["data"]["window_size"])
+
+    # split data into trainning and validation data
+    split_index = int(data_y.shape[0]*config["data"]["train_split_size"])
+    data_x_train = data_x[:split_index]
+    data_x_val = data_x[split_index:]
+    data_y_train = data_y[:split_index]
+    data_y_val = data_y[split_index:]
+
+    # prepare data for plotting
+
+    to_plot_data_y_train = np.zeros(num_data_points)
+    to_plot_data_y_val = np.zeros(num_data_points)
+
+    to_plot_data_y_train[config["data"]["window_size"]:split_index+config["data"]["window_size"]] = scaler.inverse_transform(data_y_train)
+    to_plot_data_y_val[split_index+config["data"]["window_size"]:] = scaler.inverse_transform(data_y_val)
+
+    to_plot_data_y_train = np.where(to_plot_data_y_train == 0, None, to_plot_data_y_train)
+    to_plot_data_y_val = np.where(to_plot_data_y_val == 0, None, to_plot_data_y_val)
+
+    ## plots
+
+    fig = figure(figsize=(25, 5), dpi=80)
+    fig.patch.set_facecolor((1.0, 1.0, 1.0))
+    plt.plot(data_date, to_plot_data_y_train, label="Prices (train)", color=config["plots"]["color_train"])
+    plt.plot(data_date, to_plot_data_y_val, label="Prices (validation)", color=config["plots"]["color_val"])
+    xticks = [data_date[i] if ((i%config["plots"]["xticks_interval"]==0 and (num_data_points-i) > config["plots"]["xticks_interval"]) or i==num_data_points-1) else None for i in range(num_data_points)] # make x ticks nice
+    x = np.arange(0,len(xticks))
+    plt.xticks(x, xticks, rotation='vertical')
+    plt.title("Daily close prices for " + config["alpha_vantage"]["symbol"] + " - showing training and validation data")
+    plt.grid(b=None, which='major', axis='y', linestyle='--')
+    plt.legend()
+    plt.show()
 
 
     
