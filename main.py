@@ -228,7 +228,7 @@ def prepare_data_y(x, window_size):
 def plot_time_series_data_split_into_train_and_val(
     data_date, to_plot_data_y_train, to_plot_data_y_val, 
     num_data_points, config):
-    """Plot time series data divided into training and validation dats
+    """Plot time series data divided into training and validation datasets
 
     Args:
         date_data (str[]): array of dates
@@ -376,36 +376,52 @@ class LSTMModel(nn.Module):
         predictions = self.linear_2(x)
         return predictions[:,-1]
 
-def run_epoch(dataloader, is_training=False):
-    epoch_loss = 0
+def plot_time_series_data_with_predictions_from_neural_net(
+    data_date, data_close_price, to_plot_data_y_train_pred, 
+    to_plot_data_y_val_pred, num_data_points, config):
+    """Plot time series data divided into training and validation datasets
+    along with the predictions from the neural network
 
-    if is_training:
-        model.train()
-    else:
-        model.eval()
+    Args:
+        date_data (str[]): array of dates
+        data_close_price (float[]): array of close price values
+        to_ploy_data_y_train_pred (float[]): training data predicited by nn
+        to_plot_data_y_val_pred (float[]): validation data predicted by nn
+        num_data_points (int): number of data points in sample
+        config (dict{}): configuration for file
+    """
 
-    for idx, (x, y) in enumerate(dataloader):
-        if is_training:
-            optimizer.zero_grad()
+    # set up figure
+    fig = figure(figsize=(25, 5), dpi=80)
+    fig.patch.set_facecolor((1.0, 1.0, 1.0))
+    plt.xticks(x, xticks, rotation = 'vertical')
+    plt.grid(visible = None, which = 'major', axis = 'y', linestyle = '--')
+    plt.title("Compare predicted prices to actual prices")
 
-        batchsize = x.shape[0]
+    # plot dataa
+    plt.plot(data_date, data_close_price, label = "Actual prices", 
+             color=config["plots"]["color_actual"])
+    plt.plot(data_date, to_plot_data_y_train_pred, 
+             label = "Predicted prices (train)", 
+             color = config["plots"]["color_pred_train"])
+    plt.plot(data_date, to_plot_data_y_val_pred, 
+             label = "Predicted prices (validation)", 
+             color = config["plots"]["color_pred_val"])
+    plt.title("Compare predicted prices to actual prices")
 
-        x = x.to(config["training"]["device"])
-        y = y.to(config["training"]["device"])
-
-        out = model(x)
-        loss = criterion(out.contiguous(), y.contiguous())
-
-        if is_training:
-            loss.backward()
-            optimizer.step()
-
-        epoch_loss += (loss.detach().item() / batchsize)
-
-    lr = scheduler.get_last_lr()[0]
-
-    return epoch_loss, lr
-
+    # format xticks nicely
+    xticks = [""] * num_data_points
+    for i in range(num_data_points):
+        if((i%config["plots"]["xticks_interval"] == 0 
+           and (num_data_points-i) > config["plots"]["xticks_interval"]) 
+           or i == num_data_points-1):
+            xticks[i] = data_date[i]
+        else:
+            xticks[i] = None
+    x = np.arange(0,len(xticks))
+    
+    plt.legend() # add legend
+    plt.show() # show graph
 
 def main():
     """Main function
@@ -506,7 +522,10 @@ def main():
 
     # Optimiser to update model parameters
     # Learning rate (lr) controls how quickly the model converges
-    # If its too high, we can 
+    # If its too high, the model will converge to a suboptimal solution too 
+    # quick
+    # If its too low, more training iterations are required which results
+    # in the model taking a long time to find the optimal solution
     optimizer = optim.Adam(model.parameters(), 
                            lr = config["training"]["learning_rate"], 
                            betas = (0.9, 0.98), eps = 1e-9)
@@ -516,20 +535,114 @@ def main():
         optimizer, step_size=config["training"]["scheduler_step_size"], 
         gamma = 0.1)
 
+    def run_epoch(dataloader, is_training=False):
+        """Runs each epoch
+
+        Args:
+            dataloader (_type_): _description_
+            is_training (bool): Identify whether we are training or validating.
+                                Defaults to False.
+
+        Returns:
+            epoch_loss (int): loss on the epoch
+            lr (float): new learning rate
+        """
+        epoch_loss = 0
+
+        if is_training:
+            model.train()
+        else:
+            model.eval()
+
+        for idx, (x, y) in enumerate(dataloader):
+            if is_training:
+                optimizer.zero_grad()
+
+            batchsize = x.shape[0]
+
+            x = x.to(config["training"]["device"])
+            y = y.to(config["training"]["device"])
+
+            out = model(x)
+            loss = criterion(out.contiguous(), y.contiguous())
+
+            if is_training:
+                loss.backward()
+                optimizer.step()
+
+            epoch_loss += (loss.detach().item() / batchsize)
+
+        lr = scheduler.get_last_lr()[0]
+
+        return epoch_loss, lr
+
+    # run each epoch
     for epoch in range(config["training"]["num_epoch"]):
         loss_train, lr_train = run_epoch(train_dataloader, is_training=True)
         loss_val, lr_val = run_epoch(val_dataloader)
         scheduler.step()
         
+        # print training progress
+        # After every epoch, a smaller loss value means that the model is
+        # learning well, 0 means no mistakes were makde
+        # Loss train tells us how well the model is learning
+        # Loss test tells us how well the model generalises to the 
+        # validation dataset
+        # When the difference between the two loss values is negligable, we
+        # say that the model has 'converged'
+        # Generally, loss on the training is lower than on validation
         print('Epoch[{}/{}] | loss train:{:.6f}, test:{:.6f} | lr:{:.6f}'
-                .format(epoch+1, config["training"]["num_epoch"], loss_train, loss_val, lr_train))
+              .format(epoch+1, config["training"]["num_epoch"], loss_train, 
+              loss_val, lr_train))
 
+    # Re-initialize dataloader so the data isn't shuffled, 
+    # thus we can plot the values by date
+    train_dataloader = DataLoader(dataset_train, 
+                                  batch_size=config["training"]["batch_size"], 
+                                  shuffle=False)
+    val_dataloader = DataLoader(dataset_val, 
+                                batch_size=config["training"]["batch_size"], 
+                                shuffle=False)
 
+    # evaluate the model
+    model.eval()
 
+    # predict on the training data, to see how well the model managed 
+    # to learn and memorize
+    predicted_train = np.array([])
+    for idx, (x, y) in enumerate(train_dataloader):
+        x = x.to(config["training"]["device"])
+        out = model(x)
+        out = out.cpu().detach().numpy()
+        predicted_train = np.concatenate((predicted_train, out))
 
-    
+    # predict on the validation data, to see how the model does
+    predicted_val = np.array([])
+    for idx, (x, y) in enumerate(val_dataloader):
+        x = x.to(config["training"]["device"])
+        out = model(x)
+        out = out.cpu().detach().numpy()
+        predicted_val = np.concatenate((predicted_val, out))
 
+    # prepare data for plotting exactly as before
+    to_plot_data_y_train_pred = np.zeros(num_data_points)
+    to_plot_data_y_val_pred = np.zeros(num_data_points)
 
+    to_plot_data_y_train_pred[config["data"]["window_size"] : 
+                              split_index + config["data"]["window_size"]] \
+                              = scaler.inverse_transform(predicted_train)
+    to_plot_data_y_val_pred[split_index + config["data"]["window_size"]:] \
+                            = scaler.inverse_transform(predicted_val)
+
+    to_plot_data_y_train_pred = np.where(to_plot_data_y_train_pred == 0, 
+                                         None, to_plot_data_y_train_pred)
+    to_plot_data_y_val_pred = np.where(to_plot_data_y_val_pred == 0, None, 
+                                       to_plot_data_y_val_pred)
+
+    # plot data alongside neural network predictions
+    plot_time_series_data_with_predictions_from_neural_net(
+        data_date, data_close_price, to_plot_data_y_train_pred, 
+        to_plot_data_y_val_pred, num_data_points, config)
 
 # run file
 if __name__ == "__main__":
